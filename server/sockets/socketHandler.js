@@ -3,6 +3,26 @@ import { getDistance } from "../utils/distance.js";
 const users = {};
 const RADIUS = 80;
 
+function getNearbyUsers(userId) {
+    const user = users[userId];
+    if (!user) return [];
+
+    const nearby = [];
+
+    for (let id in users) {
+        if (id === userId) continue;
+
+        const other = users[id];
+        const distance = getDistance(user.x, user.y, other.x, other.y);
+
+        if (distance < RADIUS) {
+            nearby.push(id);
+        }
+    }
+
+    return nearby;
+}
+
 export default function handleSocket(io, socket) {
     users[socket.id] = {
         id: socket.id,
@@ -10,6 +30,9 @@ export default function handleSocket(io, socket) {
         y: 100,
         room: null,
     };
+
+    const initialNearby = getNearbyUsers(socket.id);
+    socket.emit("nearby:users", initialNearby);
 
     io.emit("users:update", users);
 
@@ -21,19 +44,7 @@ export default function handleSocket(io, socket) {
 
         const currentUser = users[socket.id];
 
-        const nearby = [];
-
-        for (let id in users) {
-            if (id === socket.id) continue;
-
-            const other = users[id];
-
-            const distance = getDistance(x, y, other.x, other.y);
-
-            if (distance < RADIUS) {
-                nearby.push(id);
-            }
-        }
+        const nearby = getNearbyUsers(socket.id);
 
         const cluster = [socket.id, ...nearby].sort();
 
@@ -58,6 +69,7 @@ export default function handleSocket(io, socket) {
         }
 
         io.emit("users:update", users);
+
         socket.emit("nearby:users", nearby);
     });
 
@@ -68,6 +80,7 @@ export default function handleSocket(io, socket) {
         io.to(user.room).emit("chat:message", {
             from: socket.id,
             message,
+            timestamp: Date.now(), 
         });
     });
 
@@ -80,8 +93,13 @@ export default function handleSocket(io, socket) {
 
         delete users[socket.id];
 
-        io.emit("users:update", users);
-
         console.log("User disconnected:", socket.id);
+
+        for (let id in users) {
+            const nearby = getNearbyUsers(id);
+            io.to(id).emit("nearby:users", nearby);
+        }
+
+        io.emit("users:update", users);
     });
 }
