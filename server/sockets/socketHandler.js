@@ -23,6 +23,71 @@ function getNearbyUsers(userId) {
     return nearby;
 }
 
+function buildClusters() {
+    const visited = new Set();
+    const clusters = [];
+
+    function dfs(startId, cluster) {
+        visited.add(startId);
+        cluster.push(startId);
+
+        for (let id in users) {
+            if (visited.has(id)) continue;
+
+            const dist = getDistance(
+                users[startId].x,
+                users[startId].y,
+                users[id].x,
+                users[id].y
+            );
+
+            if (dist < RADIUS) {
+                dfs(id, cluster);
+            }
+        }
+    }
+
+    for (let id in users) {
+        if (!visited.has(id)) {
+            const cluster = [];
+            dfs(id, cluster);
+            clusters.push(cluster);
+        }
+    }
+
+    return clusters;
+}
+
+function updateRooms(io) {
+    const clusters = buildClusters();
+
+    clusters.forEach(cluster => {
+        const roomId =
+            cluster.length > 1
+                ? `room-${cluster.sort().join("-")}`
+                : null;
+
+        cluster.forEach(id => {
+            const user = users[id];
+            const socketInstance = io.sockets.sockets.get(id);
+
+            if (!socketInstance) return;
+
+            if (user.room && user.room !== roomId) {
+                socketInstance.leave(user.room);
+                console.log(`${id} left ${user.room}`);
+            }
+
+            if (roomId && user.room !== roomId) {
+                socketInstance.join(roomId);
+                console.log(`${id} joined ${roomId}`);
+            }
+
+            user.room = roomId;
+        });
+    });
+}
+
 export default function handleSocket(io, socket) {
     users[socket.id] = {
         id: socket.id,
@@ -31,8 +96,7 @@ export default function handleSocket(io, socket) {
         room: null,
     };
 
-    const initialNearby = getNearbyUsers(socket.id);
-    socket.emit("nearby:users", initialNearby);
+    socket.emit("nearby:users", getNearbyUsers(socket.id));
 
     io.emit("users:update", users);
 
@@ -42,35 +106,14 @@ export default function handleSocket(io, socket) {
         users[socket.id].x = x;
         users[socket.id].y = y;
 
-        const currentUser = users[socket.id];
-
-        const nearby = getNearbyUsers(socket.id);
-
-        const cluster = [socket.id, ...nearby].sort();
-
-        let newRoom = null;
-
-        if (cluster.length > 1) {
-            newRoom = `room-${cluster.join("-")}`;
-        }
-
-        if (currentUser.room !== newRoom) {
-            if (currentUser.room) {
-                socket.leave(currentUser.room);
-                console.log(`${socket.id} left ${currentUser.room}`);
-            }
-
-            if (newRoom) {
-                socket.join(newRoom);
-                console.log(`${socket.id} joined ${newRoom}`);
-            }
-
-            currentUser.room = newRoom;
-        }
+        updateRooms(io);
 
         io.emit("users:update", users);
 
-        socket.emit("nearby:users", nearby);
+        for (let id in users) {
+            const nearby = getNearbyUsers(id);
+            io.to(id).emit("nearby:users", nearby);
+        }
     });
 
     socket.on("chat:message", ({ message }) => {
@@ -80,7 +123,7 @@ export default function handleSocket(io, socket) {
         io.to(user.room).emit("chat:message", {
             from: socket.id,
             message,
-            timestamp: Date.now(), 
+            timestamp: Date.now(),
         });
     });
 
@@ -94,6 +137,8 @@ export default function handleSocket(io, socket) {
         delete users[socket.id];
 
         console.log("User disconnected:", socket.id);
+
+        updateRooms(io);
 
         for (let id in users) {
             const nearby = getNearbyUsers(id);
